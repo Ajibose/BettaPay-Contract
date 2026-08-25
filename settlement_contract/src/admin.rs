@@ -282,7 +282,16 @@ impl SettlementContract {
     }
 
     /// Executes a previously scheduled administrative operation.
-    pub fn execute(env: Env, operation: Operation) {
+    ///
+    /// # Authorization
+    ///
+    /// Requires authentication from the configured admin set. The caller must
+    /// pass enough valid signers to meet the current multisig threshold.
+    /// This prevents any external actor from front-running the timelock expiry
+    /// and executing an operation the admins intended to cancel (Issue #462).
+    pub fn execute(env: Env, signers: Vec<Address>, operation: Operation) {
+        verify_admin_auth(&env, &signers, read_threshold(&env));
+
         let op_hash: BytesN<32> = env.crypto().sha256(&operation.clone().to_xdr(&env)).into();
         let key = DataKey::ScheduledOperation(op_hash.clone());
 
@@ -300,11 +309,7 @@ impl SettlementContract {
 
         match operation {
             Operation::UpdateGovernance(new_gov) => Self::_update_governance(&env, new_gov),
-            Operation::CancelRecovery => {
-                let admin = read_admin(&env);
-                admin.require_auth();
-                Self::_cancel_recovery(&env)
-            }
+            Operation::CancelRecovery => Self::_cancel_recovery(&env),
             Operation::TransferAdmin(new_admins, new_threshold) => {
                 Self::_transfer_admin(&env, new_admins, new_threshold)
             }

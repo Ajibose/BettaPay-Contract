@@ -15,16 +15,16 @@ fn scheduled_operation_executes_only_after_delay() {
     let operation = Operation::TransferAdmin(new_admins.clone(), 1);
 
     client.schedule(&admin, &operation, &DEFAULT_TIMELOCK_DELAY_SECONDS);
-    assert!(client.try_execute(&operation).is_err());
+    assert!(client.try_execute(&admins, &operation).is_err());
     assert_eq!(client.get_admin(), admins);
 
     env.ledger()
         .with_mut(|ledger| ledger.timestamp += DEFAULT_TIMELOCK_DELAY_SECONDS);
-    client.execute(&operation);
+    client.execute(&admins, &operation);
 
     assert_eq!(client.get_admin(), soroban_sdk::vec![&env, new_admin]);
     assert_eq!(client.get_threshold(), 1);
-    assert!(client.try_execute(&operation).is_err());
+    assert!(client.try_execute(&admins, &operation).is_err());
 }
 
 #[test]
@@ -71,8 +71,30 @@ fn admin_can_cancel_but_non_admin_cannot() {
 
     env.ledger()
         .with_mut(|ledger| ledger.timestamp += DEFAULT_TIMELOCK_DELAY_SECONDS);
-    assert!(client.try_execute(&operation).is_err());
+    assert!(client.try_execute(&admins, &operation).is_err());
     assert!(client.try_cancel(&admin, &operation).is_err());
+}
+
+// ---------------------------------------------------------------------------
+// Issue #462: execute must require admin authentication
+// ---------------------------------------------------------------------------
+
+/// A non-admin caller is rejected when trying to execute a scheduled
+/// operation, even after the timelock delay has elapsed.
+#[test]
+fn execute_rejects_unauthorized_caller() {
+    let (env, client, admins, merchant) = setup();
+    let admin = admins.get(0).unwrap();
+    let non_admin = Address::generate(&env);
+    let operation = Operation::RegisterMerchant(merchant);
+
+    client.schedule(&admin, &operation, &DEFAULT_TIMELOCK_DELAY_SECONDS);
+
+    env.ledger()
+        .with_mut(|ledger| ledger.timestamp += DEFAULT_TIMELOCK_DELAY_SECONDS);
+
+    let unauthorized_signers = soroban_sdk::vec![&env, non_admin];
+    assert!(client.try_execute(&unauthorized_signers, &operation).is_err());
 }
 
 #[test]
@@ -103,7 +125,7 @@ fn expired_schedule_cannot_execute() {
     // The host rejects access to an archived key before the contract can map
     // it to `OperationNotScheduled`, so expiry is observed as a host panic in
     // the in-memory test environment.
-    client.execute(&operation);
+    client.execute(&admins, &operation);
 }
 
 // ---------------------------------------------------------------------------
@@ -156,7 +178,7 @@ fn timelocked_transfer_admin_parity_with_direct_path() {
 
     env.ledger()
         .with_mut(|ledger| ledger.timestamp += DEFAULT_TIMELOCK_DELAY_SECONDS);
-    client.execute(&operation);
+    client.execute(&initial_admins, &operation);
 
     assert_eq!(
         client.get_admin(),

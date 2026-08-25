@@ -156,7 +156,7 @@ fn scheduled_operation_lifecycle_uses_canonical_topics() {
 
     env.ledger()
         .with_mut(|ledger| ledger.timestamp += DEFAULT_TIMELOCK_DELAY_SECONDS);
-    client.execute(&operation);
+    client.execute(&admins, &operation);
     assert_eq!(
         last_topic(&env),
         Symbol::new(&env, events::OP_EXECUTED_EVENT)
