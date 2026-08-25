@@ -40,6 +40,9 @@ pub(crate) fn write_admins(env: &Env, admins: &Vec<Address>, threshold: u32) {
 pub(crate) fn read_threshold(env: &Env) -> u32 {
     env.storage()
         .instance()
+        .extend_ttl(READ_INSTANCE_TTL_THRESHOLD, READ_INSTANCE_TTL_BUMP);
+    env.storage()
+        .instance()
         .get(&DataKey::Threshold)
         .unwrap_or_else(|| panic_with_error!(env, SettlementError::NotInitialized))
 }
@@ -114,6 +117,9 @@ pub(crate) fn read_recovery_address(env: &Env) -> Address {
 }
 
 pub(crate) fn read_pending_recovery(env: &Env) -> PendingRecovery {
+    env.storage()
+        .instance()
+        .extend_ttl(READ_INSTANCE_TTL_THRESHOLD, READ_INSTANCE_TTL_BUMP);
     env.storage()
         .instance()
         .get::<_, PendingRecovery>(&CommonDataKey::PendingRecovery)
