@@ -208,6 +208,71 @@ fn global_default_rule_respects_governance_fee_ceiling() {
 }
 
 #[test]
+fn scheduled_merchant_rule_rejects_governance_ceiling_at_execution() {
+    let (env, gov_client, gov_admins, settle_client, settle_admins, merchant) = setup_both();
+    settle_client.register_merchant(&settle_admins, &merchant);
+    gov_client.set_fee_config(
+        &gov_admins,
+        &GovFeeConfig {
+            platform_fee_bps: 500,
+            network_fee_bps: 500,
+        },
+    );
+
+    let rule = SettlementRule {
+        platform_fee_bps: 600,
+        network_fee_bps: 100,
+        settlement_delay_ledger: 0,
+        auto_settle: false,
+    };
+    let operation = Operation::SetSettlementRule(merchant.clone(), rule);
+    settle_client.schedule(
+        &settle_admins.get(0).unwrap(),
+        &operation,
+        &DEFAULT_TIMELOCK_DELAY_SECONDS,
+    );
+    env.ledger()
+        .with_mut(|ledger| ledger.timestamp += DEFAULT_TIMELOCK_DELAY_SECONDS);
+
+    assert!(settle_client
+        .try_execute(&settle_admins, &operation)
+        .is_err());
+    assert!(settle_client.get_settlement_rule(&merchant).is_none());
+}
+
+#[test]
+fn scheduled_default_rule_rejects_governance_ceiling_at_execution() {
+    let (env, gov_client, gov_admins, settle_client, settle_admins, _merchant) = setup_both();
+    gov_client.set_fee_config(
+        &gov_admins,
+        &GovFeeConfig {
+            platform_fee_bps: 200,
+            network_fee_bps: 100,
+        },
+    );
+
+    let rule = SettlementRule {
+        platform_fee_bps: 300,
+        network_fee_bps: 50,
+        settlement_delay_ledger: 0,
+        auto_settle: false,
+    };
+    let operation = Operation::SetDefaultRule(rule);
+    settle_client.schedule(
+        &settle_admins.get(0).unwrap(),
+        &operation,
+        &DEFAULT_TIMELOCK_DELAY_SECONDS,
+    );
+    env.ledger()
+        .with_mut(|ledger| ledger.timestamp += DEFAULT_TIMELOCK_DELAY_SECONDS);
+
+    assert!(settle_client
+        .try_execute(&settle_admins, &operation)
+        .is_err());
+    assert!(settle_client.get_default_rule().is_none());
+}
+
+#[test]
 fn stored_payment_record_uses_propagated_governance_fees_when_no_explicit_rule() {
     let (env, gov_client, gov_admins, settle_client, settle_admins, merchant) = setup_both();
     settle_client.register_merchant(&settle_admins, &merchant);
