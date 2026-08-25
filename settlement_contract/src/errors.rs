@@ -72,6 +72,11 @@ pub enum SettlementError {
     AmountTooSmall = 313,
     AmountZero = 314,
     AmountNegative = 315,
+    /// The stored admin list was empty when resolving the primary admin
+    /// (index `0`). Unreachable in practice — `write_admins` rejects an
+    /// empty admin list at write time — but `read_admin` surfaces this
+    /// instead of an untyped panic if that invariant is ever violated.
+    AdminSetEmpty = 316,
 }
 
 const _: () = {
@@ -113,4 +118,5 @@ const _: () = {
     assert!(SettlementError::AmountTooSmall as u32 >= error_codes::SETTLEMENT_RANGE_START);
     assert!(SettlementError::AmountZero as u32 >= error_codes::SETTLEMENT_RANGE_START);
     assert!(SettlementError::AmountNegative as u32 >= error_codes::SETTLEMENT_RANGE_START);
+    assert!(SettlementError::AdminSetEmpty as u32 >= error_codes::SETTLEMENT_RANGE_START);
 };
