@@ -64,7 +64,11 @@ fn upgrade_uses_canonical_topic() {
     let result = client.try_upgrade(&admins, &bad_hash);
     assert!(result.is_err(), "non-conforming wasm must be rejected");
     // No event emitted on failure.
-    assert_eq!(env.events().all().len(), before, "no event on failed upgrade");
+    assert_eq!(
+        env.events().all().len(),
+        before,
+        "no event on failed upgrade"
+    );
 }
 
 #[test]
@@ -145,10 +149,9 @@ fn default_rule_and_payment_use_canonical_topics() {
 #[test]
 fn scheduled_operation_lifecycle_uses_canonical_topics() {
     let (env, client, admins, merchant) = setup();
-    let admin = admins.get(0).unwrap();
     let operation = Operation::RegisterMerchant(merchant);
 
-    client.schedule(&admin, &operation, &DEFAULT_TIMELOCK_DELAY_SECONDS);
+    client.schedule(&admins, &operation, &DEFAULT_TIMELOCK_DELAY_SECONDS);
     assert_eq!(
         last_topic(&env),
         Symbol::new(&env, events::OP_SCHEDULED_EVENT)
@@ -163,8 +166,8 @@ fn scheduled_operation_lifecycle_uses_canonical_topics() {
     );
 
     let other_operation = Operation::UnregisterMerchant(Address::generate(&env));
-    client.schedule(&admin, &other_operation, &DEFAULT_TIMELOCK_DELAY_SECONDS);
-    client.cancel(&admin, &other_operation);
+    client.schedule(&admins, &other_operation, &DEFAULT_TIMELOCK_DELAY_SECONDS);
+    client.cancel(&admins, &other_operation);
     assert_eq!(
         last_topic(&env),
         Symbol::new(&env, events::OP_CANCELLED_EVENT)

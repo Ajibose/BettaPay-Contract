@@ -251,12 +251,16 @@ impl SettlementContract {
     }
 
     /// Schedules an administrative operation to be executed after a timelock.
-    pub fn schedule(env: Env, caller: Address, operation: Operation, execute_in: u64) {
-        let admin = read_admin(&env);
-        if caller != admin {
-            panic_with_error!(&env, SettlementError::Unauthorized);
-        }
-        caller.require_auth();
+    ///
+    /// # Authorization
+    ///
+    /// Requires authentication from the configured admin set. The caller must
+    /// pass enough valid signers to meet the current multisig threshold, so a
+    /// single (possibly compromised) admin cannot enqueue an operation —
+    /// including `Upgrade` — without the required consensus (Issue #463).
+    pub fn schedule(env: Env, signers: Vec<Address>, operation: Operation, execute_in: u64) {
+        verify_admin_auth(&env, &signers, read_threshold(&env));
+        let caller = signers.get(0).unwrap();
 
         if execute_in < DEFAULT_TIMELOCK_DELAY_SECONDS {
             panic_with_error!(&env, SettlementError::ExecutionNotReady);
@@ -325,12 +329,15 @@ impl SettlementContract {
     }
 
     /// Cancels a scheduled administrative operation.
-    pub fn cancel(env: Env, caller: Address, operation: Operation) {
-        let admin = read_admin(&env);
-        if caller != admin {
-            panic_with_error!(&env, SettlementError::Unauthorized);
-        }
-        caller.require_auth();
+    ///
+    /// # Authorization
+    ///
+    /// Requires the same multisig threshold as [`Self::schedule`], so a single
+    /// admin cannot unilaterally remove an operation the full admin set agreed
+    /// to schedule (Issue #463).
+    pub fn cancel(env: Env, signers: Vec<Address>, operation: Operation) {
+        verify_admin_auth(&env, &signers, read_threshold(&env));
+        let caller = signers.get(0).unwrap();
 
         let op_hash: BytesN<32> = env.crypto().sha256(&operation.clone().to_xdr(&env)).into();
         let key = DataKey::ScheduledOperation(op_hash.clone());

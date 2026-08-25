@@ -93,11 +93,7 @@ fn every_admin_writer_preserves_the_vector_shape() {
     let scheduled_admin = Address::generate(&env);
     let scheduled_admins = soroban_sdk::vec![&env, scheduled_admin.clone()];
     let operation = Operation::TransferAdmin(scheduled_admins, 1);
-    client.schedule(
-        &admins.get(0).unwrap(),
-        &operation,
-        &DEFAULT_TIMELOCK_DELAY_SECONDS,
-    );
+    client.schedule(&admins, &operation, &DEFAULT_TIMELOCK_DELAY_SECONDS);
     env.ledger()
         .with_mut(|ledger| ledger.timestamp += DEFAULT_TIMELOCK_DELAY_SECONDS);
     client.execute(&operation);
@@ -390,7 +386,10 @@ fn executes_contract_wasm_upgrade_successfully() {
 
     // Empty wasm has no `supports_interface` — upgrade must fail.
     let result = client.try_upgrade(&admins, &bad_hash);
-    assert!(result.is_err(), "upgrade with non-conforming wasm must be rejected");
+    assert!(
+        result.is_err(),
+        "upgrade with non-conforming wasm must be rejected"
+    );
 
     // Contract remains operational after the rejected upgrade.
     let live_client = SettlementContractClient::new(&env, &client.address);
