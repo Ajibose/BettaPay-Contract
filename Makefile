@@ -21,10 +21,6 @@ clean:
 .PHONY: fmt test check clippy test_scripts wasm_size all
 
 fmt:
-	cargo fmt --all -- --check
-.PHONY: fmt test check clippy all
-
-fmt:
 	cargo fmt --all --check
 
 test:
@@ -42,5 +38,4 @@ test_scripts:
 wasm_size: optimize
 	bash scripts/check_wasm_size.sh
 
-all: fmt check clippy test test_scripts wasm_size
-all: fmt check clippy test
+all: fmt check clippy test test_scripts
