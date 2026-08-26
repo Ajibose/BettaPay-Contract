@@ -256,12 +256,9 @@ impl SettlementContract {
     }
 
     /// Schedules an administrative operation to be executed after a timelock.
-    pub fn schedule(env: Env, caller: Address, operation: Operation, execute_in: u64) {
-        let admin = read_admin(&env);
-        if caller != admin {
-            panic_with_error!(&env, SettlementError::Unauthorized);
-        }
-        caller.require_auth();
+    pub fn schedule(env: Env, signers: Vec<Address>, operation: Operation, execute_in: u64) {
+        verify_admin_auth(&env, &signers, read_threshold(&env));
+        let caller = signers.get(0).unwrap();
 
         if execute_in < DEFAULT_TIMELOCK_DELAY_SECONDS {
             panic_with_error!(&env, SettlementError::ExecutionNotReady);
@@ -335,12 +332,9 @@ impl SettlementContract {
     }
 
     /// Cancels a scheduled administrative operation.
-    pub fn cancel(env: Env, caller: Address, operation: Operation) {
-        let admin = read_admin(&env);
-        if caller != admin {
-            panic_with_error!(&env, SettlementError::Unauthorized);
-        }
-        caller.require_auth();
+    pub fn cancel(env: Env, signers: Vec<Address>, operation: Operation) {
+        verify_admin_auth(&env, &signers, read_threshold(&env));
+        let caller = signers.get(0).unwrap();
 
         let op_hash: BytesN<32> = env.crypto().sha256(&operation.clone().to_xdr(&env)).into();
         let key = DataKey::ScheduledOperation(op_hash.clone());
@@ -475,17 +469,27 @@ impl SettlementContract {
 
         env.storage().persistent().remove(&key);
 
+        // Orphan the merchant's payment history, matching the direct
+        // unregister_merchant path (issue #490).
+        let archived_key = DataKey::ArchivedMerchant(merchant.clone());
+        env.storage().persistent().set(&archived_key, &());
+        env.storage().persistent().extend_ttl(
+            &archived_key,
+            MERCHANT_TTL_THRESHOLD,
+            MERCHANT_TTL_BUMP,
+        );
+
         let rule_key = DataKey::Rule(merchant.clone());
         let old_rule: Option<SettlementRule> = env.storage().persistent().get(&rule_key);
         if let Some(old_rule) = old_rule {
             env.storage().persistent().remove(&rule_key);
-            env.events().publish(
-                (
-                    Symbol::new(env, events::SETTLEMENT_RULE_CLEARED_EVENT),
-                    merchant.clone(),
-                ),
-                (admin.clone(), old_rule),
-            );
+            // Same canonical event shape as clear_settlement_rule (issue #491).
+            let fallback = env
+                .storage()
+                .persistent()
+                .get::<_, SettlementRule>(&DataKey::DefaultRule)
+                .unwrap_or(BOOTSTRAP_DEFAULT_RULE);
+            events::emit_settlement_rule_cleared(env, &merchant, &admin, &old_rule, &fallback);
         }
 
         env.events().publish(
