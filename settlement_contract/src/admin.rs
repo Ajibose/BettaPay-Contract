@@ -13,6 +13,11 @@ use crate::storage::{
     read_pending_recovery, read_recovery_address, read_rule_or_default, read_threshold,
     validate_admins_and_threshold, validate_fee_against_governance, validate_governance,
     validate_nonzero_address, verify_admin_auth, write_admins,
+    assert_not_paused, is_merchant_registered_and_bump_ttl, read_admin, read_admins,
+    read_governance, read_pending_recovery, read_recovery_address, read_rule_or_default,
+    read_threshold,
+    validate_admins_and_threshold, validate_governance, validate_nonzero_address,
+    verify_admin_auth, write_admins,
 };
 use crate::types::{DataKey, Operation, SettlementRule};
 use crate::{
@@ -177,17 +182,17 @@ impl SettlementContract {
     }
 
     pub fn change_threshold(env: Env, signers: Vec<Address>, new_threshold: u32) {
-        let current_threshold = read_threshold(&env);
-        verify_admin_auth(&env, &signers, current_threshold + 1);
-
         let admins = read_admins(&env);
         if new_threshold == 0 || new_threshold > admins.len() {
             panic_with_error!(&env, SettlementError::InvalidThreshold);
         }
 
+        let current_threshold = read_threshold(&env);
+        verify_admin_auth(&env, &signers, current_threshold + 1);
+
         env.storage()
             .instance()
-            .set(&DataKey::Threshold, &new_threshold);
+            .set(&CommonDataKey::Threshold, &new_threshold);
         env.events().publish(
             (Symbol::new(&env, events::THRESHOLD_CHANGED_EVENT),),
             (current_threshold, new_threshold),
@@ -408,6 +413,15 @@ impl SettlementContract {
         env.deployer().update_current_contract_wasm(new_wasm_hash);
     }
 
+    /// Internal method to register a merchant.
+    ///
+    /// # Panics
+    ///
+    /// * [`Paused`](SettlementError::Paused) — if the contract is currently paused.
+    /// * [`EmptyAddress`](SettlementError::EmptyAddress) — if the provided merchant address is empty.
+    /// * [`ZeroAddress`](SettlementError::ZeroAddress) — if the provided merchant address is the zero address.
+    /// * [`InvalidAdmin`](SettlementError::InvalidAdmin) — if attempting to register an admin as a merchant.
+    /// * [`MerchantExists`](SettlementError::MerchantExists) — if the merchant is already registered.
     fn _register_merchant(env: &Env, merchant: Address) {
         assert_not_paused(env);
         validate_nonzero_address(
@@ -417,6 +431,14 @@ impl SettlementContract {
             SettlementError::ZeroAddress,
         );
         let admin = read_admin(env);
+        
+        // Prevent an admin from being registered as a merchant
+        let admins = read_admins(env);
+        for i in 0..admins.len() {
+            if admins.get(i).unwrap() == merchant {
+                panic_with_error!(env, SettlementError::InvalidAdmin);
+            }
+        }
 
         let key = DataKey::Merchant(merchant.clone());
         if env.storage().persistent().has(&key) {
@@ -436,6 +458,12 @@ impl SettlementContract {
         );
     }
 
+    /// Internal method to unregister a merchant.
+    ///
+    /// # Panics
+    ///
+    /// * [`Paused`](SettlementError::Paused) — if the contract is currently paused.
+    /// * [`MerchantMissing`](SettlementError::MerchantMissing) — if the merchant is not currently registered.
     fn _unregister_merchant(env: &Env, merchant: Address) {
         assert_not_paused(env);
         let admin = read_admin(env);
@@ -476,6 +504,7 @@ impl SettlementContract {
         validate_fee_against_governance(env, &rule);
 
         if !is_merchant_registered_internal(env, merchant.clone()) {
+        if !is_merchant_registered_and_bump_ttl(env, merchant.clone()) {
             panic_with_error!(env, SettlementError::MerchantMissing);
         }
         if rule.platform_fee_bps > BPS_DENOMINATOR || rule.network_fee_bps > BPS_DENOMINATOR {
