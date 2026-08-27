@@ -3,6 +3,7 @@
 use crate::{
     Operation, SettlementContract, SettlementContractClient, DEFAULT_TIMELOCK_DELAY_SECONDS,
 };
+use crate::{Operation, SettlementContractClient, DEFAULT_TIMELOCK_DELAY_SECONDS};
 use soroban_sdk::testutils::{Address as _, Ledger};
 use soroban_sdk::{Address, Env};
 
