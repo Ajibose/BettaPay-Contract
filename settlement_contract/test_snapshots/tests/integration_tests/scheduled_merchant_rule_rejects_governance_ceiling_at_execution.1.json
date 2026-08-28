@@ -144,7 +144,11 @@
               "function_name": "schedule",
               "args": [
                 {
-                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
+                  "vec": [
+                    {
+                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
+                    }
+                  ]
                 },
                 {
                   "vec": [
@@ -588,7 +592,24 @@
                 },
                 "durability": "persistent",
                 "val": {
-                  "u64": 172800
+                  "map": [
+                    {
+                      "key": {
+                        "symbol": "execute_at"
+                      },
+                      "val": {
+                        "u64": 172800
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "operation_xdr"
+                      },
+                      "val": {
+                        "bytes": "0000001000000001000000030000000f00000011536574536574746c656d656e7452756c65000000000000120000000100000000000000000000000000000000000000000000000000000000000000060000001100000001000000040000000f0000000b6175746f5f736574746c650000000000000000000000000f0000000f6e6574776f726b5f6665655f6270730000000003000000640000000f00000010706c6174666f726d5f6665655f62707300000003000002580000000f00000017736574746c656d656e745f64656c61795f6c6564676572000000000300000000"
+                      }
+                    }
+                  ]
                 }
               }
             },
@@ -1117,7 +1138,11 @@
             "data": {
               "vec": [
                 {
-                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
+                  "vec": [
+                    {
+                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
+                    }
+                  ]
                 },
                 {
                   "vec": [

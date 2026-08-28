@@ -227,11 +227,7 @@ fn scheduled_merchant_rule_rejects_governance_ceiling_at_execution() {
         auto_settle: false,
     };
     let operation = Operation::SetSettlementRule(merchant.clone(), rule);
-    settle_client.schedule(
-        &settle_admins.get(0).unwrap(),
-        &operation,
-        &DEFAULT_TIMELOCK_DELAY_SECONDS,
-    );
+    settle_client.schedule(&settle_admins, &operation, &DEFAULT_TIMELOCK_DELAY_SECONDS);
     env.ledger()
         .with_mut(|ledger| ledger.timestamp += DEFAULT_TIMELOCK_DELAY_SECONDS);
 
@@ -259,11 +255,7 @@ fn scheduled_default_rule_rejects_governance_ceiling_at_execution() {
         auto_settle: false,
     };
     let operation = Operation::SetDefaultRule(rule);
-    settle_client.schedule(
-        &settle_admins.get(0).unwrap(),
-        &operation,
-        &DEFAULT_TIMELOCK_DELAY_SECONDS,
-    );
+    settle_client.schedule(&settle_admins, &operation, &DEFAULT_TIMELOCK_DELAY_SECONDS);
     env.ledger()
         .with_mut(|ledger| ledger.timestamp += DEFAULT_TIMELOCK_DELAY_SECONDS);
 
@@ -1032,7 +1024,7 @@ fn timelocked_unregister_also_orphans_payments() {
     );
     env.ledger()
         .with_mut(|ledger| ledger.timestamp += DEFAULT_TIMELOCK_DELAY_SECONDS);
-    settle_client.execute(&operation);
+    settle_client.execute(&settle_admins, &operation);
 
     assert!(!settle_client.is_merchant_registered(&merchant));
     let result = settle_client.try_get_payment_reference(&merchant, &reference);
@@ -1064,21 +1056,44 @@ pub struct ReentrantGovernanceMock;
 impl ReentrantGovernanceMock {
     pub fn get_fee_config(env: Env) -> Option<GovFeeConfig> {
         // Attempt reentrancy if attack is armed
-        if let Some(target_settle) = env.storage().instance().get::<_, Address>(&Symbol::new(&env, "target_settle")) {
+        if let Some(target_settle) = env
+            .storage()
+            .instance()
+            .get::<_, Address>(&Symbol::new(&env, "target_settle"))
+        {
             let settle_client = SettlementContractClient::new(&env, &target_settle);
-            let merchant: Address = env.storage().instance().get(&Symbol::new(&env, "target_merchant")).unwrap();
-            let reference: BytesN<32> = env.storage().instance().get(&Symbol::new(&env, "target_ref")).unwrap();
-            
+            let merchant: Address = env
+                .storage()
+                .instance()
+                .get(&Symbol::new(&env, "target_merchant"))
+                .unwrap();
+            let reference: BytesN<32> = env
+                .storage()
+                .instance()
+                .get(&Symbol::new(&env, "target_ref"))
+                .unwrap();
+
             // This should fail with DuplicatePaymentReference because the dummy record locks it
             let _ = settle_client.try_store_payment_reference(&merchant, &reference, &1000);
         }
         None
     }
-    
-    pub fn setup_attack(env: Env, target_settle: Address, target_merchant: Address, target_ref: BytesN<32>) {
-        env.storage().instance().set(&Symbol::new(&env, "target_settle"), &target_settle);
-        env.storage().instance().set(&Symbol::new(&env, "target_merchant"), &target_merchant);
-        env.storage().instance().set(&Symbol::new(&env, "target_ref"), &target_ref);
+
+    pub fn setup_attack(
+        env: Env,
+        target_settle: Address,
+        target_merchant: Address,
+        target_ref: BytesN<32>,
+    ) {
+        env.storage()
+            .instance()
+            .set(&Symbol::new(&env, "target_settle"), &target_settle);
+        env.storage()
+            .instance()
+            .set(&Symbol::new(&env, "target_merchant"), &target_merchant);
+        env.storage()
+            .instance()
+            .set(&Symbol::new(&env, "target_ref"), &target_ref);
     }
 }
 
@@ -1090,10 +1105,10 @@ fn store_payment_reference_prevents_reentrancy() {
     let settle_admin = Address::generate(&env);
     let settle_recovery = Address::generate(&env);
     let settle_admins = soroban_sdk::vec![&env, settle_admin.clone()];
-    
+
     let mock_gov_id = env.register_contract(None, ReentrantGovernanceMock);
     let settle_id = env.register_contract(None, SettlementContract);
-    
+
     let settle_client = SettlementContractClient::new(&env, &settle_id);
     settle_client.init(&settle_admins, &1, &mock_gov_id, &settle_recovery);
 
@@ -1106,7 +1121,12 @@ fn store_payment_reference_prevents_reentrancy() {
     env.invoke_contract::<()>(
         &mock_gov_id,
         &Symbol::new(&env, "setup_attack"),
-        soroban_sdk::vec![&env, settle_id.into_val(&env), merchant.into_val(&env), reference.into_val(&env)],
+        soroban_sdk::vec![
+            &env,
+            settle_id.into_val(&env),
+            merchant.into_val(&env),
+            reference.into_val(&env)
+        ],
     );
 
     // This call triggers read_rule_or_default -> read_governance_fee_rule -> get_fee_config on our mock
@@ -1124,7 +1144,10 @@ fn store_payment_reference_prevents_reentrancy() {
             }
         }
     }
-    assert_eq!(store_count, 1, "payment_stored should be emitted exactly once");
+    assert_eq!(
+        store_count, 1,
+        "payment_stored should be emitted exactly once"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1187,7 +1210,7 @@ fn off_chain_settlement_readiness_logic() {
         .unwrap();
     assert_eq!(record.ledger, 1000);
     assert_eq!(record.settlement_delay_ledger, 10);
-    
+
     // Demonstrate off-chain readiness check
     let is_ready = |current_ledger: u32, r: &PaymentRecord| -> bool {
         current_ledger >= r.ledger + r.settlement_delay_ledger
@@ -1227,8 +1250,15 @@ fn set_settlement_rule_emits_fallback_and_updated_events() {
             last_event_sym = sym;
         } else if sym == Symbol::new(&env, bettapay_common::events::SETTLEMENT_RULE_UPDATED_EVENT) {
             update_found = true;
-            assert!(fallback_found, "bootstrap_fallback must precede settlement_rule_updated");
-            assert_eq!(last_event_sym, Symbol::new(&env, bettapay_common::events::BOOTSTRAP_FALLBACK_EVENT), "events must be sequential");
+            assert!(
+                fallback_found,
+                "bootstrap_fallback must precede settlement_rule_updated"
+            );
+            assert_eq!(
+                last_event_sym,
+                Symbol::new(&env, bettapay_common::events::BOOTSTRAP_FALLBACK_EVENT),
+                "events must be sequential"
+            );
             last_event_sym = sym;
         }
     }

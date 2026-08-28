@@ -118,7 +118,11 @@
               "function_name": "schedule",
               "args": [
                 {
-                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
+                  "vec": [
+                    {
+                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
+                    }
+                  ]
                 },
                 {
                   "vec": [
@@ -483,7 +487,24 @@
                 },
                 "durability": "persistent",
                 "val": {
-                  "u64": 172800
+                  "map": [
+                    {
+                      "key": {
+                        "symbol": "execute_at"
+                      },
+                      "val": {
+                        "u64": 172800
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "operation_xdr"
+                      },
+                      "val": {
+                        "bytes": "0000001000000001000000020000000f0000000e53657444656661756c7452756c6500000000001100000001000000040000000f0000000b6175746f5f736574746c650000000000000000000000000f0000000f6e6574776f726b5f6665655f6270730000000003000000320000000f00000010706c6174666f726d5f6665655f627073000000030000012c0000000f00000017736574746c656d656e745f64656c61795f6c6564676572000000000300000000"
+                      }
+                    }
+                  ]
                 }
               }
             },
@@ -931,7 +952,11 @@
             "data": {
               "vec": [
                 {
-                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
+                  "vec": [
+                    {
+                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
+                    }
+                  ]
                 },
                 {
                   "vec": [

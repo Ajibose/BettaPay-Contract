@@ -9,15 +9,10 @@ use bettapay_common::{
 
 use crate::errors::SettlementError;
 use crate::storage::{
-    assert_not_paused, is_merchant_registered_internal, read_admin, read_admins, read_governance,
-    read_pending_recovery, read_recovery_address, read_rule_or_default, read_threshold,
-    validate_admins_and_threshold, validate_fee_against_governance, validate_governance,
-    validate_nonzero_address, verify_admin_auth, write_admins,
     assert_not_paused, is_merchant_registered_and_bump_ttl, read_admin, read_admins,
     read_governance, read_pending_recovery, read_recovery_address, read_rule_or_default,
-    read_threshold,
-    validate_admins_and_threshold, validate_governance, validate_nonzero_address,
-    verify_admin_auth, write_admins,
+    read_threshold, validate_admins_and_threshold, validate_fee_against_governance,
+    validate_governance, validate_nonzero_address, verify_admin_auth, write_admins,
 };
 use crate::types::{DataKey, Operation, ScheduledOp, SettlementRule};
 use crate::{
@@ -309,8 +304,6 @@ impl SettlementContract {
     pub fn execute(env: Env, signers: Vec<Address>, operation: Operation) {
         verify_admin_auth(&env, &signers, read_threshold(&env));
 
-        let op_hash: BytesN<32> = env.crypto().sha256(&operation.clone().to_xdr(&env)).into();
-    pub fn execute(env: Env, operation: Operation) {
         let operation_xdr = operation.clone().to_xdr(&env);
         let op_hash: BytesN<32> = env.crypto().sha256(&operation_xdr).into();
         let key = DataKey::ScheduledOperation(op_hash.clone());
@@ -459,7 +452,7 @@ impl SettlementContract {
             SettlementError::ZeroAddress,
         );
         let admin = read_admin(env);
-        
+
         // Prevent an admin from being registered as a merchant
         let admins = read_admins(env);
         for i in 0..admins.len() {
@@ -541,7 +534,6 @@ impl SettlementContract {
 
         validate_fee_against_governance(env, &rule);
 
-        if !is_merchant_registered_internal(env, merchant.clone()) {
         if !is_merchant_registered_and_bump_ttl(env, merchant.clone()) {
             panic_with_error!(env, SettlementError::MerchantMissing);
         }
