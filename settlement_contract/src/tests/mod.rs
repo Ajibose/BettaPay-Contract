@@ -11,6 +11,7 @@ pub mod governance_error_tests;
 pub mod integration_tests;
 pub mod recovery_admin_set_tests;
 pub mod timelock_tests;
+pub mod ttl_tests;
 
 use crate::*;
 use soroban_sdk::testutils::Address as _;
