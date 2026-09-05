@@ -55,7 +55,6 @@ impl SettlementContract {
             &env,
             &recovery_address,
             SettlementError::InvalidRecoveryAddress,
-            SettlementError::InvalidRecoveryAddress,
         );
         for i in 0..threshold {
             admins.get(i).unwrap().require_auth();
@@ -124,7 +123,6 @@ impl SettlementContract {
         validate_nonzero_address(
             &env,
             &new_admin,
-            SettlementError::InvalidAdmin,
             SettlementError::InvalidAdmin,
         );
 
@@ -581,7 +579,6 @@ impl SettlementContract {
     /// # Panics
     ///
     /// * [`Paused`](SettlementError::Paused) — if the contract is currently paused.
-    /// * [`EmptyAddress`](SettlementError::EmptyAddress) — if the provided merchant address is empty.
     /// * [`ZeroAddress`](SettlementError::ZeroAddress) — if the provided merchant address is the zero address.
     /// * [`InvalidAdmin`](SettlementError::InvalidAdmin) — if attempting to register an admin as a merchant.
     /// * [`MerchantExists`](SettlementError::MerchantExists) — if the merchant is already registered.
@@ -590,8 +587,6 @@ impl SettlementContract {
         validate_nonzero_address(
             env,
             &merchant,
-            SettlementError::EmptyAddress,
-            SettlementError::ZeroAddress,
         );
         let admin = read_admin(env);
 
