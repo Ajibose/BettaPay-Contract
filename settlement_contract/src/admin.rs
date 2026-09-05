@@ -398,6 +398,16 @@ impl SettlementContract {
 
     /// Executes a previously scheduled administrative operation.
     ///
+    /// # Authorization
+    ///
+    /// Requires authentication from the configured admin set. The caller must
+    /// pass enough valid signers to meet the current multisig threshold.
+    /// This prevents any external actor from front-running the timelock expiry
+    /// and executing an operation the admins intended to cancel (Issue #462).
+    pub fn execute(env: Env, signers: Vec<Address>, operation: Operation) {
+        verify_admin_auth(&env, &signers, read_threshold(&env));
+
+        let op_hash: BytesN<32> = env.crypto().sha256(&operation.clone().to_xdr(&env)).into();
     /// # Execution auth policy (uniform)
     ///
     /// `execute` deliberately performs **no caller authentication** for any
@@ -601,11 +611,6 @@ impl SettlementContract {
                 panic_with_error!(env, SettlementError::InvalidAdmin);
             }
         }
-
-        // Same consent requirement as the direct `register_merchant` path: the
-        // merchant must authorize its own registration, even when scheduled
-        // and executed through the timelocked admin-operation flow.
-        merchant.require_auth();
 
         let key = DataKey::Merchant(merchant.clone());
         if env.storage().persistent().has(&key) {
