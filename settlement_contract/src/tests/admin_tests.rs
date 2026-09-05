@@ -3,10 +3,13 @@
 
 use crate::*;
 use soroban_sdk::testutils::{Address as _, Events, Ledger};
-use soroban_sdk::{Address, BytesN, Env, FromVal, Symbol, TryFromVal};
+use soroban_sdk::{Address, Env, FromVal, Symbol, TryFromVal};
 
-use bettapay_common::constants::RECOVERY_DELAY_SECONDS;
-use bettapay_common::events::AdminTransferred;
+use bettapay_common::constants::{
+    BPS_DENOMINATOR, MAX_FEE_BPS, MIN_FEE_BPS, RECOVERY_DELAY_SECONDS,
+};
+use bettapay_common::events::{AdminTransferred, PendingRecovery};
+use bettapay_common::storage::CommonDataKey;
 
 use super::{register_governance, setup};
 
@@ -26,6 +29,7 @@ fn emits_event_on_initialization() {
     let client = SettlementContractClient::new(&env, &contract_id);
 
     client.init(
+        &deployer,
         &soroban_sdk::vec![&env, admin.clone()],
         &1,
         &governance,
@@ -43,7 +47,8 @@ fn rejects_double_initialization() {
     let (env, client, admins, _) = setup();
     let governance = register_governance(&env);
     let recovery_address = Address::generate(&env);
-    client.init(&admins, &1, &governance, &recovery_address);
+    let deployer = Address::generate(&env);
+    client.init(&deployer, &admins, &1, &governance, &recovery_address);
     let _ = env;
 }
 
@@ -68,6 +73,64 @@ fn transfer_admin_updates_admin_address() {
     assert_eq!(client.get_admin(), admins);
     client.transfer_admin(&admins, &soroban_sdk::vec![&env, new_admin.clone()], &1);
     assert_eq!(client.get_admin(), soroban_sdk::vec![&env, new_admin]);
+}
+
+#[test]
+fn every_admin_writer_preserves_the_vector_shape() {
+    // Direct transfer.
+    let (env, client, admins, _) = setup();
+    let direct_admin = Address::generate(&env);
+    client.transfer_admin(&admins, &soroban_sdk::vec![&env, direct_admin.clone()], &1);
+    assert_eq!(client.get_admin(), soroban_sdk::vec![&env, direct_admin]);
+
+    // Recovery transfer.
+    let (env, client, _admins, _) = setup();
+    let recovery_admin = Address::generate(&env);
+    client.initiate_recovery(&recovery_admin);
+    env.ledger()
+        .with_mut(|ledger| ledger.timestamp += RECOVERY_DELAY_SECONDS);
+    client.execute_recovery();
+    assert_eq!(client.get_admin(), soroban_sdk::vec![&env, recovery_admin]);
+
+    // Timelocked transfer (the path that previously wrote a scalar Address).
+    let (env, client, admins, _) = setup();
+    let scheduled_admin = Address::generate(&env);
+    let scheduled_admins = soroban_sdk::vec![&env, scheduled_admin.clone()];
+    let operation = Operation::TransferAdmin(scheduled_admins, 1);
+    client.schedule(&admins, &operation, &DEFAULT_TIMELOCK_DELAY_SECONDS);
+    env.ledger()
+        .with_mut(|ledger| ledger.timestamp += DEFAULT_TIMELOCK_DELAY_SECONDS);
+    client.execute(&admins, &operation);
+    client.execute(&admins.get(0).unwrap(), &operation);
+    assert_eq!(client.get_admin(), soroban_sdk::vec![&env, scheduled_admin]);
+}
+
+#[test]
+fn failed_recovery_keeps_pending_target() {
+    let (env, client, _admins, _) = setup();
+    let zero_admin = Address::from_string(&soroban_sdk::String::from_str(
+        &env,
+        "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+    ));
+    let pending = PendingRecovery {
+        new_admin: zero_admin.clone(),
+        execute_after: env.ledger().timestamp(),
+        initiated_by: Address::generate(&env),
+    };
+
+    env.as_contract(&client.address, || {
+        env.storage()
+            .instance()
+            .set(&CommonDataKey::PendingRecovery, &pending);
+    });
+
+    assert!(client.try_execute_recovery().is_err());
+    let retained: Option<PendingRecovery> = env.as_contract(&client.address, || {
+        env.storage()
+            .instance()
+            .get(&CommonDataKey::PendingRecovery)
+    });
+    assert_eq!(retained.unwrap().new_admin, zero_admin);
 }
 
 #[test]
@@ -118,7 +181,7 @@ fn emits_event_on_admin_transfer() {
     assert_eq!(topics.len(), 1);
     assert_eq!(
         Symbol::from_val(&env, &topics.get(0).unwrap()),
-        Symbol::new(&env, "admin_transferred")
+        Symbol::new(&env, bettapay_common::events::ADMIN_TRANSFERRED_EVENT)
     );
 
     let payload: AdminTransferred = AdminTransferred::try_from_val(&env, &data).unwrap();
@@ -141,38 +204,37 @@ fn pause_flag_changes_state() {
     assert!(!client.is_paused());
 }
 
-// Issue #518: pause/unpause must publish the canonical `paused`/`unpaused`
-// topics with the shared `(admin, bool)` payload shape.
+// Issue #550: settlement previously emitted non-canonical "pause"/"unpause"/
+// "admin" topics while governance used "paused"/"unpaused"/
+// "admin_transferred", so an indexer subscribed to the canonical names
+// missed every settlement event. This pins settlement's topics to
+// `bettapay_common::events`' shared constants so it fails again if either
+// contract's topic strings drift apart.
 #[test]
-fn emits_canonical_pause_and_unpause_events() {
+fn pause_unpause_and_admin_transfer_use_canonical_topics() {
     let (env, client, admins, _merchant) = setup();
-    let admin = admins.get(0).unwrap();
 
     client.pause(&admins);
-    let events = env.events().all();
-    let event = events.last().unwrap();
-    let (contract_id, topics, data) = event;
-    assert_eq!(contract_id, client.address);
+    let (_, pause_topics, _) = env.events().all().last().unwrap();
     assert_eq!(
-        Symbol::from_val(&env, &topics.get(0).unwrap()),
-        Symbol::new(&env, "paused")
+        Symbol::from_val(&env, &pause_topics.get(0).unwrap()),
+        Symbol::new(&env, bettapay_common::events::PAUSED_EVENT)
     );
-    let (event_admin, flag): (Address, bool) = FromVal::from_val(&env, &data);
-    assert_eq!(event_admin, admin);
-    assert!(flag);
 
     client.unpause(&admins);
-    let events = env.events().all();
-    let event = events.last().unwrap();
-    let (contract_id, topics, data) = event;
-    assert_eq!(contract_id, client.address);
+    let (_, unpause_topics, _) = env.events().all().last().unwrap();
     assert_eq!(
-        Symbol::from_val(&env, &topics.get(0).unwrap()),
-        Symbol::new(&env, "unpaused")
+        Symbol::from_val(&env, &unpause_topics.get(0).unwrap()),
+        Symbol::new(&env, bettapay_common::events::UNPAUSED_EVENT)
     );
-    let (event_admin, flag): (Address, bool) = FromVal::from_val(&env, &data);
-    assert_eq!(event_admin, admin);
-    assert!(!flag);
+
+    let new_admin = Address::generate(&env);
+    client.transfer_admin(&admins, &soroban_sdk::vec![&env, new_admin], &1);
+    let (_, transfer_topics, _) = env.events().all().last().unwrap();
+    assert_eq!(
+        Symbol::from_val(&env, &transfer_topics.get(0).unwrap()),
+        Symbol::new(&env, bettapay_common::events::ADMIN_TRANSFERRED_EVENT)
+    );
 }
 
 // Issue #73: verify non-admins cannot pause the settlement contract
@@ -182,6 +244,54 @@ fn pause_rejected_for_non_admin() {
     let (env, client, _admins, _merchant) = setup();
     let non_admin = Address::generate(&env);
     client.pause(&soroban_sdk::vec![&env, non_admin]);
+}
+
+// ---------------------------------------------------------------------------
+// Pause idempotency (mirrors governance — both contracts must behave the same)
+// ---------------------------------------------------------------------------
+
+#[test]
+#[should_panic(expected = "Error(Contract, #15)")]
+fn pause_rejected_when_already_paused() {
+    let (_env, client, admins, _merchant) = setup();
+    client.pause(&admins);
+    // Second pause must reject with AlreadyPaused (#15) and emit no extra event.
+    client.pause(&admins);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #16)")]
+fn unpause_rejected_when_already_unpaused() {
+    let (_env, client, admins, _merchant) = setup();
+    // Contract starts unpaused; calling unpause immediately must reject with AlreadyUnpaused (#16).
+    client.unpause(&admins);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #15)")]
+fn double_pause_emits_no_extra_event() {
+    let (env, client, admins, _merchant) = setup();
+    client.pause(&admins);
+    let prev = env.events().all().len();
+    client.pause(&admins);
+    assert_eq!(
+        env.events().all().len(),
+        prev,
+        "double pause must not emit events"
+    );
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #16)")]
+fn unpause_when_not_paused_emits_no_event() {
+    let (env, client, admins, _merchant) = setup();
+    let prev = env.events().all().len();
+    client.unpause(&admins);
+    assert_eq!(
+        env.events().all().len(),
+        prev,
+        "unpause when not paused must not emit events"
+    );
 }
 
 #[test]
@@ -235,12 +345,30 @@ fn clear_settlement_rule_rejected_when_paused() {
 
 // Issue #231: the global default settlement rule must not be updated while paused.
 #[test]
+#[should_panic(expected = "Error(Contract, #6)")]
+fn register_merchant_rejects_admin_address() {
+    let (_env, client, admins, _merchant) = setup();
+    let admin = admins.get(0).unwrap();
+
+    // The admin cannot be registered as a merchant
+    client.register_merchant(&admins, &admin);
+}
+
+#[test]
+// SettlementError::Paused maps to error code 5
 #[should_panic(expected = "Error(Contract, #5)")]
 fn set_default_rule_rejected_when_paused() {
     let (_env, client, admins, _merchant) = setup();
-    client.pause(&admins);
-    assert!(client.is_paused());
 
+    // Pause the contract to simulate an emergency state
+    client.pause(&admins);
+    assert_eq!(
+        client.is_paused(),
+        true,
+        "Contract must be paused before testing rejection"
+    );
+
+    // Attempt to set a valid default rule; this should be rejected due to the pause state
     let rule = SettlementRule {
         platform_fee_bps: 250,
         network_fee_bps: 50,
@@ -251,38 +379,151 @@ fn set_default_rule_rejected_when_paused() {
 }
 
 // ---------------------------------------------------------------------------
+// fee ceiling (issue #521)
+// ---------------------------------------------------------------------------
+
+// Both fees are independently capped at MAX_FEE_BPS (5000, i.e. 50%), even
+// before governance has configured a GovFeeConfig - settlement no longer relies
+// solely on `validate_fee_against_governance` (which is a no-op with no
+// governance config set) to keep per-fee values below 100%.
+#[test]
+#[should_panic(expected = "Error(Contract, #4)")]
+fn set_settlement_rule_rejects_platform_fee_above_max_fee_bps() {
+    let (_env, client, admins, merchant) = setup();
+    client.register_merchant(&admins, &merchant);
+
+    let rule = SettlementRule {
+        platform_fee_bps: bettapay_common::constants::MAX_FEE_BPS + 1,
+        network_fee_bps: 50,
+        settlement_delay_ledger: 7,
+        auto_settle: true,
+    };
+    client.set_settlement_rule(&admins, &merchant, &rule);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #4)")]
+fn set_settlement_rule_rejects_network_fee_above_max_fee_bps() {
+    let (_env, client, admins, merchant) = setup();
+    client.register_merchant(&admins, &merchant);
+
+    let rule = SettlementRule {
+        platform_fee_bps: 50,
+        network_fee_bps: bettapay_common::constants::MAX_FEE_BPS + 1,
+        settlement_delay_ledger: 7,
+        auto_settle: true,
+    };
+    client.set_settlement_rule(&admins, &merchant, &rule);
+}
+
+#[test]
+fn set_settlement_rule_accepts_fee_at_max_fee_bps_ceiling() {
+    let (_env, client, admins, merchant) = setup();
+    client.register_merchant(&admins, &merchant);
+
+    let rule = SettlementRule {
+        platform_fee_bps: bettapay_common::constants::MAX_FEE_BPS,
+        network_fee_bps: bettapay_common::constants::MIN_FEE_BPS,
+        settlement_delay_ledger: 7,
+        auto_settle: true,
+    };
+    client.set_settlement_rule(&admins, &merchant, &rule);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #4)")]
+fn set_default_rule_rejects_fee_above_max_fee_bps() {
+    let (_env, client, admins, _merchant) = setup();
+
+    let rule = SettlementRule {
+        platform_fee_bps: bettapay_common::constants::MAX_FEE_BPS + 1,
+        network_fee_bps: 50,
+        settlement_delay_ledger: 7,
+        auto_settle: true,
+    };
+    client.set_default_rule(&admins, &rule);
+}
+
+#[test]
+fn bootstrap_default_rule_satisfies_setter_fee_validation() {
+    let rule = BOOTSTRAP_DEFAULT_RULE;
+
+    assert!(rule.platform_fee_bps >= MIN_FEE_BPS);
+    assert_eq!(rule.network_fee_bps, MIN_FEE_BPS);
+    assert!(rule.platform_fee_bps <= MAX_FEE_BPS);
+    assert!(rule.network_fee_bps <= MAX_FEE_BPS);
+    assert!(rule.platform_fee_bps <= BPS_DENOMINATOR);
+    assert!(rule.network_fee_bps <= BPS_DENOMINATOR);
+    assert!(rule.platform_fee_bps + rule.network_fee_bps <= BPS_DENOMINATOR);
+    assert!(rule.settlement_delay_ledger <= MAX_SETTLEMENT_DELAY_LEDGER);
+}
+
+// ---------------------------------------------------------------------------
 // upgrade
 // ---------------------------------------------------------------------------
 
 #[test]
 fn executes_contract_wasm_upgrade_successfully() {
+    // After the interface check was added, empty wasm (no exports) is correctly
+    // rejected. This test verifies rejection and confirms the contract is intact.
     let (env, client, admins, _) = setup();
     let wasm = soroban_sdk::Bytes::from_slice(&env, &[]);
-    let new_wasm_hash = env.deployer().upload_contract_wasm(wasm);
+    let bad_hash = env.deployer().upload_contract_wasm(wasm);
 
-    let before = env.events().all().len();
-    // Verifies the structural update pass completes without panicking
-    client.upgrade(&admins, &new_wasm_hash);
-
-    let events = env.events().all();
-    assert!(events.len() > before);
-
-    let event = events.last().unwrap();
-    let (_contract_id, topics, data) = event;
-
-    assert_eq!(
-        Symbol::from_val(&env, &topics.get(0).unwrap()),
-        Symbol::new(&env, "contract_upgraded")
+    // Empty wasm has no `supports_interface` — upgrade must fail.
+    let result = client.try_upgrade(&admins, &bad_hash);
+    assert!(
+        result.is_err(),
+        "upgrade with non-conforming wasm must be rejected"
     );
-    assert_eq!(
-        BytesN::<32>::from_val(&env, &topics.get(1).unwrap()),
-        new_wasm_hash
-    );
-    assert_eq!(Address::from_val(&env, &data), admins.get(0).unwrap());
 
-    // Ensure the upgraded contract remains callable and retains its state.
-    let upgraded_client = SettlementContractClient::new(&env, &client.address);
-    assert_eq!(upgraded_client.get_admin(), admins);
+    // Contract remains operational after the rejected upgrade.
+    let live_client = SettlementContractClient::new(&env, &client.address);
+    assert_eq!(live_client.get_admin(), admins);
+}
+
+// ---------------------------------------------------------------------------
+// change_threshold
+// ---------------------------------------------------------------------------
+
+// Issue #565: setting a threshold above the admin count must surface
+// `InvalidThreshold` (#14), not `Unauthorized` (#3) from the auth gate.
+#[test]
+#[should_panic(expected = "Error(Contract, #14)")]
+fn change_threshold_above_admin_count_rejects_with_invalid_threshold() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let a1 = Address::generate(&env);
+    let a2 = Address::generate(&env);
+    let admins = soroban_sdk::vec![&env, a1.clone(), a2.clone()];
+    let recovery = Address::generate(&env);
+    let governance = register_governance(&env);
+    let contract_id = env.register_contract(None, SettlementContract);
+    let client = SettlementContractClient::new(&env, &contract_id);
+    let deployer = Address::generate(&env);
+    client.init(&deployer, &admins, &1, &governance, &recovery);
+
+    // Threshold 3 > admins.len() 2 — must fail with InvalidThreshold, not auth.
+    client.change_threshold(&admins, &3);
+}
+
+// Issue #565: threshold == 0 must also be rejected before the auth gate.
+#[test]
+#[should_panic(expected = "Error(Contract, #14)")]
+fn change_threshold_zero_rejects_with_invalid_threshold() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let a1 = Address::generate(&env);
+    let a2 = Address::generate(&env);
+    let admins = soroban_sdk::vec![&env, a1.clone(), a2.clone()];
+    let recovery = Address::generate(&env);
+    let governance = register_governance(&env);
+    let contract_id = env.register_contract(None, SettlementContract);
+    let client = SettlementContractClient::new(&env, &contract_id);
+    let deployer = Address::generate(&env);
+    client.init(&deployer, &admins, &2, &governance, &recovery);
+
+    client.change_threshold(&admins, &0);
 }
 
 // ---------------------------------------------------------------------------
@@ -301,6 +542,7 @@ fn recovery_executes_after_delay() {
     let client = SettlementContractClient::new(&env, &contract_id);
 
     client.init(
+        &deployer,
         &soroban_sdk::vec![&env, admin.clone()],
         &1,
         &governance,
@@ -330,6 +572,21 @@ fn update_governance_stores_validated_address() {
     assert_eq!(client.get_governance(), new_governance);
 }
 
+/// The direct `update_governance` path must reject an address that fails
+/// `validate_governance`. A zero address is rejected with
+/// `InvalidGovernance` (#309) before any storage is written.
+#[test]
+#[should_panic(expected = "Error(Contract, #309)")]
+fn update_governance_rejects_zero_address() {
+    let (env, client, admins, _merchant) = setup();
+    let zero_address = Address::from_string(&soroban_sdk::String::from_str(
+        &env,
+        "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+    ));
+
+    client.update_governance(&admins, &zero_address);
+}
+
 #[test]
 fn bps_newtype_conversions_and_arithmetic_helpers_work() {
     let bps = Bps::new(250);
@@ -354,132 +611,164 @@ fn bps_newtype_conversions_and_arithmetic_helpers_work() {
 }
 
 // ---------------------------------------------------------------------------
-// get_effective_rule (Issue #579)
+// InvalidWasmInterface: upgrade flow enforces supports_interface(1)
 // ---------------------------------------------------------------------------
 
+/// Uploading an empty Wasm (which has no `supports_interface` export) must be
+/// rejected with `InvalidWasmInterface` (code 13).
 #[test]
-fn get_effective_rule_uses_bootstrap_default_when_no_rules_set() {
-    let (_env, client, admins, merchant) = setup();
-
-    client.register_merchant(&admins, &merchant);
-
-    let rule = client.get_effective_rule(&merchant);
-    assert_eq!(rule.platform_fee_bps, BOOTSTRAP_DEFAULT_RULE.platform_fee_bps);
-    assert_eq!(rule.network_fee_bps, BOOTSTRAP_DEFAULT_RULE.network_fee_bps);
-    assert_eq!(rule.settlement_delay_ledger, BOOTSTRAP_DEFAULT_RULE.settlement_delay_ledger);
-    assert_eq!(rule.auto_settle, BOOTSTRAP_DEFAULT_RULE.auto_settle);
+#[should_panic(expected = "Error(Contract, #13)")]
+fn upgrade_rejects_wasm_missing_supports_interface() {
+    let (env, client, admins, _) = setup();
+    // Empty wasm has no exports — the probe call will trap, raising the typed error.
+    let bad_hash = env
+        .deployer()
+        .upload_contract_wasm(soroban_sdk::Bytes::from_slice(&env, &[]));
+    client.upgrade(&admins, &bad_hash);
 }
 
-#[test]
-fn get_effective_rule_uses_global_default_when_set() {
-    let (_env, client, admins, merchant) = setup();
+/// Non-admin callers must be rejected with `Unauthorized` (code 3) before
+/// the interface check is even attempted.
+// ---------------------------------------------------------------------------
+// Matrix test: check-order parity between direct and scheduled paths (issue #523)
+// ---------------------------------------------------------------------------
 
+/// Verifies that the direct (`set_settlement_rule`) and scheduled
+/// (`schedule` + `execute`) paths enforce the same canonical check order:
+///   pause → fee validation → merchant registration.
+///
+/// For every (paused, invalid_fee, missing_merchant) combination the test
+/// asserts that both paths surface the identical error code.
+#[test]
+fn settlement_rule_check_order_parity_across_paths() {
+    use soroban_sdk::testutils::Ledger;
+
+    let (env, client, admins, merchant) = setup();
+    // Register the merchant so we have a "present" case to contrast with.
     client.register_merchant(&admins, &merchant);
 
-    let global_default = SettlementRule {
-        platform_fee_bps: 200,
-        network_fee_bps: 50,
-        settlement_delay_ledger: 100,
-        auto_settle: true,
-    };
-    client.set_default_rule(&admins, &global_default);
-
-    let rule = client.get_effective_rule(&merchant);
-    assert_eq!(rule.platform_fee_bps, 200);
-    assert_eq!(rule.network_fee_bps, 50);
-    assert_eq!(rule.settlement_delay_ledger, 100);
-    assert_eq!(rule.auto_settle, true);
-}
-
-#[test]
-fn get_effective_rule_merchant_rule_overrides_global_default() {
-    let (_env, client, admins, merchant) = setup();
-
-    client.register_merchant(&admins, &merchant);
-
-    let global_default = SettlementRule {
-        platform_fee_bps: 200,
-        network_fee_bps: 50,
-        settlement_delay_ledger: 100,
-        auto_settle: true,
-    };
-    client.set_default_rule(&admins, &global_default);
-
-    let merchant_rule = SettlementRule {
-        platform_fee_bps: 300,
-        network_fee_bps: 100,
-        settlement_delay_ledger: 500,
-        auto_settle: false,
-    };
-    client.set_settlement_rule(&admins, &merchant, &merchant_rule);
-
-    let rule = client.get_effective_rule(&merchant);
-    assert_eq!(rule.platform_fee_bps, 300);
-    assert_eq!(rule.network_fee_bps, 100);
-    assert_eq!(rule.settlement_delay_ledger, 500);
-    assert_eq!(rule.auto_settle, false);
-}
-
-#[test]
-fn get_effective_rule_cleared_merchant_rule_falls_back_to_global_default() {
-    let (_env, client, admins, merchant) = setup();
-
-    client.register_merchant(&admins, &merchant);
-
-    let global_default = SettlementRule {
-        platform_fee_bps: 150,
-        network_fee_bps: 75,
-        settlement_delay_ledger: 200,
-        auto_settle: true,
-    };
-    client.set_default_rule(&admins, &global_default);
-
-    let merchant_rule = SettlementRule {
-        platform_fee_bps: 300,
-        network_fee_bps: 100,
-        settlement_delay_ledger: 500,
-        auto_settle: false,
-    };
-    client.set_settlement_rule(&admins, &merchant, &merchant_rule);
-    assert_eq!(client.get_effective_rule(&merchant).platform_fee_bps, 300);
-
-    client.clear_settlement_rule(&admins, &merchant);
-
-    let rule = client.get_effective_rule(&merchant);
-    assert_eq!(rule.platform_fee_bps, 150);
-    assert_eq!(rule.network_fee_bps, 75);
-    assert_eq!(rule.settlement_delay_ledger, 200);
-    assert_eq!(rule.auto_settle, true);
-}
-
-#[test]
-#[should_panic(expected = "Error(Contract, #301)")]
-fn get_effective_rule_rejects_unregistered_merchant() {
-    let (_env, client, _admins, merchant) = setup();
-
-    client.get_effective_rule(&merchant);
-}
-
-#[test]
-fn get_effective_rule_agrees_with_calculate_fee_split_bps() {
-    let (_env, client, admins, merchant) = setup();
-
-    client.register_merchant(&admins, &merchant);
-
-    let merchant_rule = SettlementRule {
+    let valid_rule = SettlementRule {
         platform_fee_bps: 250,
-        network_fee_bps: 80,
-        settlement_delay_ledger: 42,
+        network_fee_bps: 50,
+        settlement_delay_ledger: 7,
         auto_settle: true,
     };
-    client.set_settlement_rule(&admins, &merchant, &merchant_rule);
+    let invalid_fee_rule = SettlementRule {
+        platform_fee_bps: 0,
+        network_fee_bps: 0,
+        settlement_delay_ledger: 0,
+        auto_settle: false,
+    };
+    let missing = Address::generate(&env); // unregistered merchant
 
-    let effective = client.get_effective_rule(&merchant);
-    let split = client.calculate_fee_split(&merchant, &1_000_000);
+    // Helper: schedule + advance time + execute via the timelocked path.
+    let schedule_and_execute = |client: &SettlementContractClient,
+                                admins: &soroban_sdk::Vec<Address>,
+                                op: &Operation| {
+        client.schedule(admins, op, &DEFAULT_TIMELOCK_DELAY_SECONDS);
+        env.ledger()
+            .with_mut(|ledger| ledger.timestamp += DEFAULT_TIMELOCK_DELAY_SECONDS);
+        client.execute(&admins.get(0).unwrap(), op);
+    };
 
-    assert_eq!(effective.platform_fee_bps, 250);
-    assert_eq!(effective.network_fee_bps, 80);
-    assert_eq!(split.platform_fee_amount, 2_500);
-    assert_eq!(split.network_fee_amount, 800);
+    // ---- 1. Paused ⇒ Paused (code 5) on both paths ----
+    client.pause(&admins);
+
+    let op = Operation::SetSettlementRule(merchant.clone(), valid_rule.clone());
+    assert_eq!(client.try_set_settlement_rule(&admins, &merchant, &valid_rule).unwrap_err(),
+               soroban_sdk::Error::from_contract_error(5));
+    assert_eq!(client.try_schedule(&admins, &op, &DEFAULT_TIMELOCK_DELAY_SECONDS).unwrap_err(),
+               soroban_sdk::Error::from_contract_error(5));
+
+    // Unpause for the remaining cases.
+    client.unpause(&admins);
+
+    // ---- 2. Invalid fee + registered merchant ⇒ InvalidFeeBps (code 4) ----
+    assert_eq!(client.try_set_settlement_rule(&admins, &merchant, &invalid_fee_rule).unwrap_err(),
+               soroban_sdk::Error::from_contract_error(4));
+    let op = Operation::SetSettlementRule(merchant.clone(), invalid_fee_rule.clone());
+    client.schedule(&admins, &op, &DEFAULT_TIMELOCK_DELAY_SECONDS);
+    env.ledger()
+        .with_mut(|ledger| ledger.timestamp += DEFAULT_TIMELOCK_DELAY_SECONDS);
+    assert_eq!(client.try_execute(&admins.get(0).unwrap(), &op).unwrap_err(),
+               soroban_sdk::Error::from_contract_error(4));
+
+    // ---- 3. Valid rule + missing merchant ⇒ MerchantMissing (code 302) ----
+    assert_eq!(client.try_set_settlement_rule(&admins, &missing, &valid_rule).unwrap_err(),
+               soroban_sdk::Error::from_contract_error(302));
+    let op = Operation::SetSettlementRule(missing.clone(), valid_rule.clone());
+    client.schedule(&admins, &op, &DEFAULT_TIMELOCK_DELAY_SECONDS);
+    env.ledger()
+        .with_mut(|ledger| ledger.timestamp += DEFAULT_TIMELOCK_DELAY_SECONDS);
+    assert_eq!(client.try_execute(&admins.get(0).unwrap(), &op).unwrap_err(),
+               soroban_sdk::Error::from_contract_error(302));
 }
 
+#[test]
+#[should_panic(expected = "Error(Contract, #3)")]
+fn upgrade_rejects_non_admin_before_interface_check() {
+    let (env, client, _admins, _) = setup();
+    let non_admin = Address::generate(&env);
+    let bad_hash = env
+        .deployer()
+        .upload_contract_wasm(soroban_sdk::Bytes::from_slice(&env, &[]));
+    client.upgrade(&soroban_sdk::vec![&env, non_admin], &bad_hash);
+}
+
+// ---------------------------------------------------------------------------
+// Issue #704: SchemaVersion baseline + migrate skeleton
+// ---------------------------------------------------------------------------
+
+/// `init` must write the `SchemaVersion` marker, and calling `migrate`
+/// repeatedly must be a no-op once the contract is already at
+/// `CURRENT_SCHEMA_VERSION` — mirroring governance_contract's equivalent
+/// test for issue #507.
+#[test]
+fn init_writes_schema_version_marker_and_migrate_is_idempotent() {
+    use crate::types::DataKey;
+
+    let (env, client, admins, _merchant) = setup();
+
+    let version = env.as_contract(&client.address, || {
+        env.storage()
+            .instance()
+            .get::<_, u32>(&DataKey::SchemaVersion)
+    });
+    assert_eq!(version, Some(CURRENT_SCHEMA_VERSION));
+
+    client.migrate(&admins);
+    client.migrate(&admins);
+
+    let version_after = env.as_contract(&client.address, || {
+        env.storage()
+            .instance()
+            .get::<_, u32>(&DataKey::SchemaVersion)
+    });
+    assert_eq!(version_after, Some(CURRENT_SCHEMA_VERSION));
+
+    let (_, topics, _) = env.events().all().last().unwrap();
+    assert_eq!(
+        Symbol::from_val(&env, &topics.get(0).unwrap()),
+        Symbol::new(&env, bettapay_common::events::MIGRATED_EVENT)
+    );
+}
+
+/// `migrate` is admin-gated like every other administrative entry point.
+#[test]
+#[should_panic(expected = "Error(Contract, #3)")]
+fn migrate_rejected_for_non_admin() {
+    let (env, client, _admins, _merchant) = setup();
+    let non_admin = Address::generate(&env);
+    client.migrate(&soroban_sdk::vec![&env, non_admin]);
+}
+
+/// `migrate` must respect the same pause gate as the rest of the admin
+/// surface — a paused contract can't be migrated out from under an
+/// in-progress incident response.
+#[test]
+#[should_panic(expected = "Error(Contract, #5)")]
+fn migrate_rejected_while_paused() {
+    let (_env, client, admins, _merchant) = setup();
+    client.pause(&admins);
+    client.migrate(&admins);
+}

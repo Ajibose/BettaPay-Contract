@@ -12,9 +12,12 @@
 use crate::errors::SettlementError;
 use governance_contract::GovernanceError;
 
-fn governance_codes() -> [(&'static str, u32); 19] {
+fn governance_codes() -> [(&'static str, u32); 16] {
     [
-        ("AlreadyInitialized", GovernanceError::AlreadyInitialized as u32),
+        (
+            "AlreadyInitialized",
+            GovernanceError::AlreadyInitialized as u32,
+        ),
         ("NotInitialized", GovernanceError::NotInitialized as u32),
         ("Unauthorized", GovernanceError::Unauthorized as u32),
         ("InvalidFeeBps", GovernanceError::InvalidFeeBps as u32),
@@ -33,34 +36,22 @@ fn governance_codes() -> [(&'static str, u32); 19] {
             GovernanceError::RecoveryDelayActive as u32,
         ),
         (
-            "ExecutionNotReady",
-            GovernanceError::ExecutionNotReady as u32,
-        ),
-        (
-            "OperationNotScheduled",
-            GovernanceError::OperationNotScheduled as u32,
-        ),
-        (
-            "OperationAlreadyScheduled",
-            GovernanceError::OperationAlreadyScheduled as u32,
-        ),
-        (
             "InvalidWasmInterface",
             GovernanceError::InvalidWasmInterface as u32,
         ),
         ("InvalidThreshold", GovernanceError::InvalidThreshold as u32),
+        ("AlreadyPaused", GovernanceError::AlreadyPaused as u32),
+        ("AlreadyUnpaused", GovernanceError::AlreadyUnpaused as u32),
         ("AnchorMissing", GovernanceError::AnchorMissing as u32),
         (
             "InvalidParamValue",
             GovernanceError::InvalidParamValue as u32,
         ),
-        ("AlreadyPaused", GovernanceError::AlreadyPaused as u32),
-        ("AlreadyUnpaused", GovernanceError::AlreadyUnpaused as u32),
         ("SameAdmin", GovernanceError::SameAdmin as u32),
     ]
 }
 
-fn settlement_codes() -> [(&'static str, u32); 24] {
+fn settlement_codes() -> [(&'static str, u32); 27] {
     [
         (
             "AlreadyInitialized",
@@ -100,6 +91,8 @@ fn settlement_codes() -> [(&'static str, u32); 24] {
             SettlementError::InvalidWasmInterface as u32,
         ),
         ("InvalidThreshold", SettlementError::InvalidThreshold as u32),
+        ("AlreadyPaused", SettlementError::AlreadyPaused as u32),
+        ("AlreadyUnpaused", SettlementError::AlreadyUnpaused as u32),
         ("MerchantExists", SettlementError::MerchantExists as u32),
         ("MerchantMissing", SettlementError::MerchantMissing as u32),
         (
@@ -110,7 +103,6 @@ fn settlement_codes() -> [(&'static str, u32); 24] {
             "MerchantRuleNotSet",
             SettlementError::MerchantRuleNotSet as u32,
         ),
-        ("EmptyAddress", SettlementError::EmptyAddress as u32),
         ("ZeroAddress", SettlementError::ZeroAddress as u32),
         (
             "InvalidPaymentReference",
@@ -120,24 +112,43 @@ fn settlement_codes() -> [(&'static str, u32); 24] {
             "InvalidSettlementDelay",
             SettlementError::InvalidSettlementDelay as u32,
         ),
-        ("InvalidGovernance", SettlementError::InvalidGovernance as u32),
+        (
+            "InvalidGovernance",
+            SettlementError::InvalidGovernance as u32,
+        ),
         ("AmountOverflow", SettlementError::AmountOverflow as u32),
+        ("PaymentOrphaned", SettlementError::PaymentOrphaned as u32),
+        (
+            "OperationHashCollision",
+            SettlementError::OperationHashCollision as u32,
+        ),
     ]
 }
 
 #[test]
 fn shared_registry_codes_are_identical_in_both_contracts() {
     for &(name, code) in bettapay_common::error_codes::SHARED_CODES {
-        let gov = governance_codes()
-            .into_iter()
-            .find(|&(n, _)| n == name)
-            .unwrap_or_else(|| panic!("governance_contract has no `{name}` variant"));
+        // Settlement implements every shared concept, so it must carry every
+        // shared code. Governance only carries the shared codes for features it
+        // actually exposes (e.g. it has no scheduled-operation timelock, so it
+        // intentionally omits the `ExecutionNotReady` family); any shared code
+        // governance *does* declare must still match the registry.
         let settle = settlement_codes()
             .into_iter()
             .find(|&(n, _)| n == name)
             .unwrap_or_else(|| panic!("settlement_contract has no `{name}` variant"));
-        assert_eq!(gov.1, code, "governance `{name}` drifted from the registry");
-        assert_eq!(settle.1, code, "settlement `{name}` drifted from the registry");
+        assert_eq!(
+            settle.1, code,
+            "settlement `{name}` drifted from the registry"
+        );
+        if let Some((_gov_name, gov_code)) =
+            governance_codes().into_iter().find(|&(n, _)| n == name)
+        {
+            assert_eq!(
+                gov_code, code,
+                "governance `{name}` drifted from the registry"
+            );
+        }
     }
 }
 

@@ -21,8 +21,8 @@ the [README](README.md).
 
 Both contracts expose an admin-only `upgrade` entry point:
 
-- `SettlementContract::upgrade(env, new_wasm_hash)`
-- `GovernanceContract::upgrade(env, caller, new_wasm_hash)`
+- `SettlementContract::upgrade(env, signers, new_wasm_hash)`
+- `GovernanceContract::upgrade(env, signers, new_wasm_hash)`
 
 Each calls `env.deployer().update_current_contract_wasm(new_wasm_hash)`.
 
@@ -56,7 +56,7 @@ What is on the ledger today, and which storage kind holds it.
 | `DefaultRule` | persistent | `SettlementRule` |
 | `Merchant(Address)` | persistent | merchant registration |
 | `Rule(Address)` | persistent | `SettlementRule` |
-| `Payment(BytesN<32>)` | persistent | `PaymentRecord` |
+| `Payment(Address, BytesN<32>)` | persistent | `PaymentRecord` |
 
 ### Governance contract
 
@@ -66,6 +66,7 @@ What is on the ledger today, and which storage kind holds it.
 | `RecoveryAddress` | instance | `Address` |
 | `PendingRecovery` | instance | `PendingRecovery` |
 | `Paused` | instance | `bool` |
+| `SchemaVersion` | instance | `u32` (written at `init`, issue #507) |
 | `FeeConfig` | persistent | fee configuration |
 | `Anchor(Address)` | persistent | anchor address per asset |
 | `SystemParam(Symbol)` | persistent | numeric system parameter |
@@ -93,11 +94,13 @@ no "scan the prefix". Every read requires the caller to already know the exact
 key.
 
 This is visible in the existing API surface: `get_payments` takes
-`references: Vec<BytesN<32>>` from the caller rather than returning all
-payments, because returning all payments is not something the contract can do.
+`merchant` plus `references: Vec<BytesN<32>>` from the caller rather than
+returning all payments, because returning all payments is not something the
+contract can do.
 
 So "read the old-format data from storage" is only a well-defined instruction
-for fixed keys. For `Payment(BytesN<32>)` the contract does not and cannot know
+for fixed keys. For `Payment(Address, BytesN<32>)` the contract does not and
+cannot know
 which references exist.
 
 ### 2. A contract can only touch its own storage
@@ -123,6 +126,8 @@ contract of its own.
 
 ## The Migration Pattern
 
+*Note: The governance contract now ships a `SchemaVersion` marker (written at `init`) and an admin-gated, idempotent `migrate` entry point (issue #507). The settlement contract has not adopted the marker yet; this section remains the template for when it does.*
+
 Ordering is the point: the code that can read both formats has to be deployed
 before anything is rewritten.
 
@@ -131,7 +136,7 @@ before anything is rewritten.
 Before the first migration, add a version key so the contract can tell which
 format is on the ledger and refuse to run a migration twice.
 
-```rust
+```rust,ignore
 enum DataKey {
     // ...
     SchemaVersion,      // instance storage, u32
@@ -159,6 +164,7 @@ become.
 
 ```bash
 stellar contract invoke --id "$SETTLEMENT_ID" -- upgrade \
+  --signers '["G...ADMIN"]' \
   --new_wasm_hash "$NEW_WASM_HASH"
 ```
 
@@ -246,7 +252,7 @@ written before the field existed has no `settled` key, so deserialising it into
 the new struct **fails** — the read panics. Existing rows do not silently pick
 up a default. This is why the old type has to stay in the Wasm.
 
-```rust
+```rust,ignore
 /// Pre-v2 shape retained in Wasm so existing entries remain readable during lazy migration.
 #[contracttype]
 #[derive(Clone)]
@@ -300,9 +306,9 @@ impl PaymentRecordV1 {
 
 Updating the actual contract getter entry point [`get_payment_reference`](settlement_contract/src/payments.rs) to convert in place on read:
 
-```rust
-pub fn get_payment_reference(env: Env, reference: BytesN<32>) -> Option<PaymentRecord> {
-    let key = DataKey::Payment(reference);
+```rust,ignore
+pub fn get_payment_reference(env: Env, merchant: Address, reference: BytesN<32>) -> Option<PaymentRecord> {
+    let key = DataKey::Payment(merchant, reference);
 
     // New format first: after conversion this is the only branch taken.
     if let Some(record) = env.storage().persistent().get::<_, PaymentRecord>(&key) {
@@ -326,7 +332,7 @@ pub fn get_payment_reference(env: Env, reference: BytesN<32>) -> Option<PaymentR
 
 The eager half, for fixed keys, gated by admin authentication and idempotent:
 
-```rust
+```rust,ignore
 /// Migrates singleton entries to schema version 2. Admin only.
 pub fn migrate(env: Env, signers: Vec<Address>) {
     assert_not_paused(&env);
@@ -354,7 +360,7 @@ A `#[contracttype]` enum encodes the **variant name** as part of the key. So:
 
 To change a key format, keep the old variant long enough to read through it:
 
-```rust
+```rust,ignore
 enum DataKey {
     // ...
     Payment(BytesN<32>),           // v1 key, retained for migration reads
