@@ -24,6 +24,7 @@ mod panicking_gov {
     use soroban_sdk::{contract, contractimpl, Env};
     use soroban_sdk::{contract, contractimpl, Env};
     use crate::GovFeeConfig;
+    use soroban_sdk::{contract, contractimpl, Env};
 
     /// A governance stub whose `get_fee_config` always traps (simulates a
     /// broken or mis-deployed governance contract).
